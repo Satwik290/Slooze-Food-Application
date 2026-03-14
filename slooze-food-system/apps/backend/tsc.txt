@@ -1,0 +1,6 @@
+src/common/guards/jwt-auth.guard.ts(27,3): error TS2416: Property 'handleRequest' in type 'JwtAuthGuard' is not assignable to the same property in base type 'IAuthGuard'.
+  Type '(err: unknown, user: false | { userId: string; email: string; role: string; regionId: string; } | null, info: unknown) => { userId: string; email: string; role: string; regionId: string; }' is not assignable to type '<TUser = any>(err: any, user: any, info: any, context: ExecutionContext, status?: any) => TUser'.
+    Type '{ userId: string; email: string; role: string; regionId: string; }' is not assignable to type 'TUser'.
+      'TUser' could be instantiated with an arbitrary type which could be unrelated to '{ userId: string; email: string; role: string; regionId: string; }'.
+src/orders/orders.controller.ts(31,39): error TS2345: Argument of type '{ id: string; email: string; role: string; regionId: string; }' is not assignable to parameter of type '{ userId: string; email: string; role: string; regionId: string; }'.
+  Property 'userId' is missing in type '{ id: string; email: string; role: string; regionId: string; }' but required in type '{ userId: string; email: string; role: string; regionId: string; }'.

@@ -1,0 +1,2 @@
+C:\Users\satwi\OneDrive\Desktop\test project\slooze-food-system\apps\frontend\src\app\(dashboard)\cart\page.tsx
+  Line 45: react/no-unescaped-entities - `'` can be escaped with `&apos;`, `&lsquo;`, `&#39;`, `&rsquo;`.
