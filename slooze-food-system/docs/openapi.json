@@ -123,6 +123,132 @@
                 ]
             }
         },
+        "/orders/cart": {
+            "get": {
+                "operationId": "OrdersController_getRegionCart",
+                "parameters": [
+                    {
+                        "name": "restaurantId",
+                        "required": true,
+                        "in": "query",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": ""
+                    }
+                },
+                "tags": [
+                    "Orders"
+                ]
+            },
+            "post": {
+                "operationId": "OrdersController_upsertRegionCart",
+                "parameters": [],
+                "responses": {
+                    "201": {
+                        "description": ""
+                    }
+                },
+                "tags": [
+                    "Orders"
+                ]
+            }
+        },
+        "/orders/cart/join/{cartId}": {
+            "get": {
+                "operationId": "OrdersController_joinCart",
+                "parameters": [
+                    {
+                        "name": "cartId",
+                        "required": true,
+                        "in": "path",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": ""
+                    }
+                },
+                "tags": [
+                    "Orders"
+                ]
+            }
+        },
+        "/orders/cart/{cartId}/item/{menuItemId}": {
+            "delete": {
+                "operationId": "OrdersController_removeItemFromCart",
+                "parameters": [
+                    {
+                        "name": "cartId",
+                        "required": true,
+                        "in": "path",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "menuItemId",
+                        "required": true,
+                        "in": "path",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": ""
+                    }
+                },
+                "tags": [
+                    "Orders"
+                ]
+            }
+        },
+        "/orders/cart/clear": {
+            "delete": {
+                "operationId": "OrdersController_clearRegionCart",
+                "parameters": [],
+                "responses": {
+                    "200": {
+                        "description": ""
+                    }
+                },
+                "tags": [
+                    "Orders"
+                ]
+            }
+        },
+        "/orders/cart/{cartId}": {
+            "delete": {
+                "operationId": "OrdersController_clearCart",
+                "parameters": [
+                    {
+                        "name": "cartId",
+                        "required": true,
+                        "in": "path",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": ""
+                    }
+                },
+                "tags": [
+                    "Orders"
+                ]
+            }
+        },
         "/orders": {
             "post": {
                 "operationId": "OrdersController_create",
