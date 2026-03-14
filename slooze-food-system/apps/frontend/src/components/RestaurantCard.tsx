@@ -33,7 +33,7 @@ export default function RestaurantCard({ id, name, region, isManager, index = 0 
       onClick={() => router.push(`/restaurants/${id}`)}
     >
       {/* Image / gradient area */}
-      <div className={`aspect-video w-full bg-gradient-to-br ${gradient} relative overflow-hidden`}>
+      <div className={`aspect-video w-full bg-linear-to-br ${gradient} relative overflow-hidden`}>
         {/* Decorative pattern overlay */}
         <div className="absolute inset-0 opacity-20"
           style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)', backgroundSize: '24px 24px' }}

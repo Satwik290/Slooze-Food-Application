@@ -3,64 +3,84 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
-  ConflictException,
+  Inject,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
-import { OrderStatus } from '@prisma/client';
+import { OrderStatus, Prisma } from '@prisma/client';
+
+// ── Gateway interface ────────────────────────────────────────────────────
+// Defined here so orders.service.ts has zero dependency on the gateway file.
+// CartGateway implements this interface — TypeScript is satisfied without
+// needing to resolve the import when the module path is broken.
+export const CART_GATEWAY = 'CART_GATEWAY';
+
+export interface ICartGateway {
+  emitCartUpdate(regionId: string, cart: unknown): void;
+  emitCartCleared(regionId: string): void;
+  emitUserJoined(regionId: string, userName: string): void;
+}
 
 interface RequestUser {
   id: string;
   email: string;
+  name?: string;
   role: string;
   regionId: string;
 }
 
+// Prisma result types for strong typing — eliminates all unsafe-member errors
+type OrderItemWithRelations = Prisma.OrderItemGetPayload<{
+  include: { menuItem: true; restaurant: true };
+}>;
+
+type OrderWithRelations = Prisma.OrderGetPayload<{
+  include: {
+    orderItems: { include: { menuItem: true; restaurant: true } };
+    restaurant: true;
+  };
+}>;
+
 @Injectable()
 export class OrdersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Inject(CART_GATEWAY) private cartGateway: ICartGateway,
+  ) {}
 
   // ─── Shared Region Cart ───────────────────────────────────────────────
 
-  /** Return the shared CART-status order for a region+restaurant, or null. */
-  async getRegionCart(regionId: string, restaurantId: string) {
+  async getRegionCart(regionId: string, _restaurantId: string) {
     return this.prisma.order.findFirst({
-      where: {
-        regionId,
-        restaurantId,
-        status: OrderStatus.CART,
-      },
+      where: { regionId, status: OrderStatus.CART },
       include: {
-        orderItems: {
-          include: {
-            menuItem: true,
-          },
-        },
+        orderItems: { include: { menuItem: true, restaurant: true } },
         restaurant: true,
         user: { select: { id: true, name: true, email: true } },
       },
     });
   }
 
-  /** Add / update items in the shared region cart. Creates the cart if it doesn't exist. */
   async upsertRegionCart(
     user: RequestUser,
     restaurantId: string,
     items: { menuItemId: string; quantity: number }[],
   ) {
-    // Validate region access
+    // ── Region access guard ──────────────────────────────────────────
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id: restaurantId },
     });
     if (!restaurant) throw new NotFoundException('Restaurant not found');
 
     if (user.role !== 'ADMIN' && restaurant.regionId !== user.regionId) {
-      throw new ForbiddenException('You cannot add to a cart for a restaurant outside your region');
+      throw new ForbiddenException(
+        'You cannot add to a cart for a restaurant outside your region',
+      );
     }
 
     const regionId = user.regionId;
 
-    // Validate all menu items
+    // ── Validate all menu items ──────────────────────────────────────
     for (const item of items) {
       const dbItem = await this.prisma.menuItem.findUnique({
         where: { id: item.menuItemId },
@@ -70,33 +90,24 @@ export class OrdersService {
       }
     }
 
-    // Check if ANY shared cart exists for this region
-    const anyExistingCart = await this.prisma.order.findFirst({
+    // ── Find ANY existing cart for this region ───────────────────────
+    const existingCart = await this.prisma.order.findFirst({
       where: { regionId, status: OrderStatus.CART },
-      include: { restaurant: true },
+      include: { orderItems: { include: { menuItem: true, restaurant: true } } },
     });
 
-    if (anyExistingCart && anyExistingCart.restaurantId !== restaurantId) {
-      throw new ConflictException(
-        `Your region already has an active cart with ${anyExistingCart.restaurant.name}. Please clear it first.`,
-      );
-    }
-
-    const existingCart =
-      anyExistingCart && anyExistingCart.restaurantId === restaurantId
-        ? await this.prisma.order.findUnique({
-            where: { id: anyExistingCart.id },
-            include: { orderItems: { include: { menuItem: true } } },
-          })
-        : null;
+    let updatedCart: OrderWithRelations;
 
     if (existingCart) {
-      // Merge incoming items into existing cart
       for (const item of items) {
         const dbItem = await this.prisma.menuItem.findUniqueOrThrow({
           where: { id: item.menuItemId },
         });
-        const existing = existingCart.orderItems.find((o) => o.menuItemId === item.menuItemId);
+
+        const existing: OrderItemWithRelations | undefined = existingCart.orderItems.find(
+          (o: OrderItemWithRelations) => o.menuItemId === item.menuItemId,
+        );
+
         if (existing) {
           await this.prisma.orderItem.update({
             where: { id: existing.id },
@@ -109,108 +120,157 @@ export class OrdersService {
               menuItemId: item.menuItemId,
               quantity: item.quantity,
               price: dbItem.price,
+              restaurantId,
             },
           });
         }
       }
-      // Recalculate total
+
       const updatedItems = await this.prisma.orderItem.findMany({
         where: { orderId: existingCart.id },
-        include: { menuItem: true },
+        include: { menuItem: true, restaurant: true },
       });
-      const totalPrice = updatedItems.reduce((sum, i) => sum + i.price * i.quantity, 0);
-      return this.prisma.order.update({
+      const totalPrice = updatedItems.reduce(
+        (sum: number, i: OrderItemWithRelations) => sum + i.price * i.quantity,
+        0,
+      );
+
+      updatedCart = await this.prisma.order.update({
         where: { id: existingCart.id },
         data: { totalPrice },
         include: {
-          orderItems: { include: { menuItem: true } },
+          orderItems: { include: { menuItem: true, restaurant: true } },
+          restaurant: true,
+        },
+      });
+    } else {
+      let totalPrice = 0;
+      const orderItemsData: {
+        menuItemId: string;
+        quantity: number;
+        price: number;
+        restaurantId: string;
+      }[] = [];
+
+      for (const item of items) {
+        const dbItem = await this.prisma.menuItem.findUniqueOrThrow({
+          where: { id: item.menuItemId },
+        });
+        totalPrice += dbItem.price * item.quantity;
+        orderItemsData.push({
+          menuItemId: dbItem.id,
+          quantity: item.quantity,
+          price: dbItem.price,
+          restaurantId,
+        });
+      }
+
+      updatedCart = await this.prisma.order.create({
+        data: {
+          userId: user.id,
+          restaurantId: null,
+          regionId,
+          totalPrice,
+          status: OrderStatus.CART,
+          orderItems: { create: orderItemsData },
+        },
+        include: {
+          orderItems: { include: { menuItem: true, restaurant: true } },
           restaurant: true,
         },
       });
     }
 
-    // Create a new shared cart
-    let totalPrice = 0;
-    const orderItemsData: { menuItemId: string; quantity: number; price: number }[] = [];
-    for (const item of items) {
-      const dbItem = await this.prisma.menuItem.findUniqueOrThrow({
-        where: { id: item.menuItemId },
-      });
-      totalPrice += dbItem.price * item.quantity;
-      orderItemsData.push({ menuItemId: dbItem.id, quantity: item.quantity, price: dbItem.price });
-    }
-
-    return this.prisma.order.create({
-      data: {
-        userId: user.id,
-        restaurantId,
-        regionId,
-        totalPrice,
-        status: OrderStatus.CART,
-        orderItems: { create: orderItemsData },
-      },
-      include: {
-        orderItems: { include: { menuItem: true } },
-        restaurant: true,
-      },
-    });
+    this.cartGateway.emitCartUpdate(regionId, updatedCart);
+    return updatedCart;
   }
 
-  /** Remove a single item from the shared cart. */
   async removeItemFromCart(user: RequestUser, cartId: string, menuItemId: string) {
     const cart = await this.prisma.order.findUnique({
       where: { id: cartId },
-      include: { orderItems: { include: { menuItem: true } } },
+      include: { orderItems: { include: { menuItem: true, restaurant: true } } },
     });
     if (!cart) throw new NotFoundException('Cart not found');
     if (cart.regionId !== user.regionId && user.role !== 'ADMIN') {
       throw new ForbiddenException('Cannot modify a cart outside your region');
     }
-    await this.prisma.orderItem.deleteMany({
-      where: { orderId: cartId, menuItemId },
-    });
-    const remaining = await this.prisma.orderItem.findMany({
-      where: { orderId: cartId },
-    });
-    const totalPrice = remaining.reduce((s, i) => s + i.price * i.quantity, 0);
-    return this.prisma.order.update({
+
+    await this.prisma.orderItem.deleteMany({ where: { orderId: cartId, menuItemId } });
+
+    const remaining = await this.prisma.orderItem.findMany({ where: { orderId: cartId } });
+    const totalPrice = remaining.reduce(
+      (s: number, i: { price: number; quantity: number }) => s + i.price * i.quantity,
+      0,
+    );
+
+    const updatedCart = await this.prisma.order.update({
       where: { id: cartId },
       data: { totalPrice },
-      include: { orderItems: { include: { menuItem: true } }, restaurant: true },
+      include: {
+        orderItems: { include: { menuItem: true, restaurant: true } },
+        restaurant: true,
+      },
     });
+
+    if (cart.regionId) {
+      this.cartGateway.emitCartUpdate(cart.regionId, updatedCart);
+    }
+
+    return updatedCart;
   }
 
-  /** Clear the shared cart for the user's region. */
   async clearRegionCart(user: RequestUser) {
-    const regionId = user.regionId;
     const cart = await this.prisma.order.findFirst({
-      where: { regionId, status: OrderStatus.CART },
+      where: { regionId: user.regionId, status: OrderStatus.CART },
     });
-    if (!cart) return null; // No cart to clear
-    await this.prisma.orderItem.deleteMany({ where: { orderId: cart.id } });
-    return this.prisma.order.update({
-      where: { id: cart.id },
-      data: { totalPrice: 0 },
-      include: { orderItems: { include: { menuItem: true } }, restaurant: true },
-    });
+    if (!cart) return null;
+
+    await this.prisma.order.delete({ where: { id: cart.id } });
+    this.cartGateway.emitCartCleared(user.regionId);
+    return null;
   }
 
-  /** Clear all items from the shared cart by ID. */
   async clearCart(user: RequestUser, cartId: string) {
     const cart = await this.prisma.order.findUnique({ where: { id: cartId } });
     if (!cart) throw new NotFoundException('Cart not found');
     if (cart.regionId !== user.regionId && user.role !== 'ADMIN') {
       throw new ForbiddenException('Cannot clear a cart outside your region');
     }
-    await this.prisma.orderItem.deleteMany({ where: { orderId: cartId } });
-    return this.prisma.order.update({
-      where: { id: cartId },
-      data: { totalPrice: 0 },
-      include: { orderItems: { include: { menuItem: true } }, restaurant: true },
-    });
+
+    await this.prisma.order.delete({ where: { id: cartId } });
+
+    if (cart.regionId) {
+      this.cartGateway.emitCartCleared(cart.regionId);
+    }
+    return null;
   }
 
-  // ─── Standard CRUD (unchanged) ────────────────────────────────────────
+  async joinCart(user: RequestUser, cartId: string) {
+    const cart = await this.prisma.order.findUnique({
+      where: { id: cartId },
+      include: {
+        orderItems: { include: { menuItem: true, restaurant: true } },
+        restaurant: true,
+        region: true,
+      },
+    });
+
+    if (!cart) throw new NotFoundException('Cart not found or already checked out');
+    if (cart.status !== OrderStatus.CART) {
+      throw new BadRequestException('This cart is no longer active');
+    }
+    if (user.role !== 'ADMIN' && cart.regionId !== user.regionId) {
+      throw new ForbiddenException('You cannot join a cart outside your region');
+    }
+
+    if (cart.regionId) {
+      this.cartGateway.emitUserJoined(cart.regionId, user.name ?? user.email);
+    }
+
+    return cart;
+  }
+
+  // ─── Standard CRUD ────────────────────────────────────────────────────
 
   async create(createOrderDto: CreateOrderDto, user: RequestUser) {
     const { restaurantId, items } = createOrderDto;
@@ -225,7 +285,12 @@ export class OrdersService {
     }
 
     let totalPrice = 0;
-    const orderItemsData: { menuItemId: string; quantity: number; price: number }[] = [];
+    const orderItemsData: {
+      menuItemId: string;
+      quantity: number;
+      price: number;
+      restaurantId: string;
+    }[] = [];
 
     for (const item of items) {
       const dbItem = await this.prisma.menuItem.findUnique({
@@ -235,7 +300,12 @@ export class OrdersService {
         throw new BadRequestException(`Invalid menu item ID: ${item.menuItemId}`);
       }
       totalPrice += dbItem.price * item.quantity;
-      orderItemsData.push({ menuItemId: dbItem.id, quantity: item.quantity, price: dbItem.price });
+      orderItemsData.push({
+        menuItemId: dbItem.id,
+        quantity: item.quantity,
+        price: dbItem.price,
+        restaurantId,
+      });
     }
 
     return this.prisma.order.create({
@@ -246,28 +316,40 @@ export class OrdersService {
         status: OrderStatus.CART,
         orderItems: { create: orderItemsData },
       },
-      include: { orderItems: true },
+      include: {
+        orderItems: { include: { menuItem: true, restaurant: true } },
+      },
     });
   }
 
   async findAll(user: RequestUser) {
     if (user.role === 'ADMIN') {
       return this.prisma.order.findMany({
-        include: { restaurant: true, user: true, orderItems: true },
+        include: {
+          restaurant: true,
+          user: true,
+          orderItems: { include: { menuItem: true, restaurant: true } },
+        },
       });
     }
     if (user.role === 'MANAGER') {
       return this.prisma.order.findMany({
-        where: { restaurant: { regionId: user.regionId } },
-        include: { restaurant: true, user: true, orderItems: true },
+        where: { regionId: user.regionId },
+        include: {
+          restaurant: true,
+          user: true,
+          orderItems: { include: { menuItem: true, restaurant: true } },
+        },
       });
     }
-    // MEMBER: see own orders OR any shared cart in their region
     return this.prisma.order.findMany({
       where: {
         OR: [{ userId: user.id }, { regionId: user.regionId, status: OrderStatus.CART }],
       },
-      include: { restaurant: true, orderItems: true },
+      include: {
+        restaurant: true,
+        orderItems: { include: { menuItem: true, restaurant: true } },
+      },
     });
   }
 
@@ -275,7 +357,7 @@ export class OrdersService {
     const order = await this.prisma.order.findUnique({
       where: { id },
       include: {
-        orderItems: { include: { menuItem: true } },
+        orderItems: { include: { menuItem: true, restaurant: true } },
         restaurant: true,
       },
     });
@@ -286,7 +368,7 @@ export class OrdersService {
       throw new ForbiddenException('You can only view your own orders');
     }
 
-    if (user.role === 'MANAGER' && order.restaurant.regionId !== user.regionId) {
+    if (user.role === 'MANAGER' && order.regionId !== user.regionId) {
       throw new ForbiddenException('Cannot view order outside your region');
     }
 
@@ -300,12 +382,14 @@ export class OrdersService {
 
     const order = await this.prisma.order.findUnique({
       where: { id },
-      include: { restaurant: true, orderItems: { include: { menuItem: true } } },
+      include: {
+        orderItems: { include: { menuItem: true, restaurant: true } },
+        restaurant: true,
+      },
     });
     if (!order) throw new NotFoundException('Order not found');
 
-    // Manager must be in the same region as the restaurant / cart
-    if (user.role === 'MANAGER' && order.restaurant.regionId !== user.regionId) {
+    if (user.role === 'MANAGER' && order.regionId !== user.regionId) {
       throw new ForbiddenException('Cannot checkout an order outside your region');
     }
 
@@ -327,6 +411,10 @@ export class OrdersService {
       },
     });
 
+    if (order.regionId) {
+      this.cartGateway.emitCartCleared(order.regionId);
+    }
+
     return updatedOrder;
   }
 
@@ -341,9 +429,15 @@ export class OrdersService {
       throw new BadRequestException('Order cannot be cancelled in its current state');
     }
 
-    return this.prisma.order.update({
+    const cancelled = await this.prisma.order.update({
       where: { id },
       data: { status: OrderStatus.CANCELLED },
     });
+
+    if (order.status === OrderStatus.CART && order.regionId) {
+      this.cartGateway.emitCartCleared(order.regionId);
+    }
+
+    return cancelled;
   }
 }

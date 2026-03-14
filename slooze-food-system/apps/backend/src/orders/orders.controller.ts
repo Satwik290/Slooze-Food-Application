@@ -8,6 +8,7 @@ import { Role } from '@prisma/client';
 interface RequestUser {
   id: string;
   email: string;
+  name?: string;
   role: string;
   regionId: string;
 }
@@ -18,16 +19,13 @@ export class OrdersController {
 
   // ─── Shared Region Cart ──────────────────────────────────────────────
 
-  /** GET /orders/cart?restaurantId=xxx — fetch shared cart for the user's region */
+  /** GET /orders/cart?restaurantId=xxx */
   @Get('cart')
-  getRegionCart(
-    @Query('restaurantId') restaurantId: string,
-    @CurrentUser() user: RequestUser,
-  ) {
+  getRegionCart(@Query('restaurantId') restaurantId: string, @CurrentUser() user: RequestUser) {
     return this.ordersService.getRegionCart(user.regionId, restaurantId);
   }
 
-  /** POST /orders/cart — add/update items in the shared regional cart */
+  /** POST /orders/cart */
   @Post('cart')
   upsertRegionCart(
     @Body() body: { restaurantId: string; items: { menuItemId: string; quantity: number }[] },
@@ -36,7 +34,13 @@ export class OrdersController {
     return this.ordersService.upsertRegionCart(user, body.restaurantId, body.items);
   }
 
-  /** DELETE /orders/cart/:cartId/item/:menuItemId — remove one item */
+  /** GET /orders/cart/join/:cartId — join a shared cart via link */
+  @Get('cart/join/:cartId')
+  joinCart(@Param('cartId') cartId: string, @CurrentUser() user: RequestUser) {
+    return this.ordersService.joinCart(user, cartId);
+  }
+
+  /** DELETE /orders/cart/:cartId/item/:menuItemId */
   @Delete('cart/:cartId/item/:menuItemId')
   removeItemFromCart(
     @Param('cartId') cartId: string,
@@ -46,19 +50,19 @@ export class OrdersController {
     return this.ordersService.removeItemFromCart(user, cartId, menuItemId);
   }
 
-  /** DELETE /orders/cart/clear — clear the shared regional cart */
+  /** DELETE /orders/cart/clear */
   @Delete('cart/clear')
   clearRegionCart(@CurrentUser() user: RequestUser) {
     return this.ordersService.clearRegionCart(user);
   }
 
-  /** DELETE /orders/cart/:cartId — clear entire shared cart by ID */
+  /** DELETE /orders/cart/:cartId */
   @Delete('cart/:cartId')
   clearCart(@Param('cartId') cartId: string, @CurrentUser() user: RequestUser) {
     return this.ordersService.clearCart(user, cartId);
   }
 
-  // ─── Standard order CRUD ─────────────────────────────────────────────
+  // ─── Standard CRUD ───────────────────────────────────────────────────
 
   @Post()
   create(@Body() createOrderDto: CreateOrderDto, @CurrentUser() user: RequestUser) {

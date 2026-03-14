@@ -5,11 +5,72 @@ import api from '@/lib/api';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { useStore } from '@/lib/store';
 import { toast } from 'sonner';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { useState } from 'react';
+
+// ── Types ────────────────────────────────────────────────────────────────
+
+interface Restaurant {
+  id: string;
+  name: string;
+}
+
+interface MenuItem {
+  id: string;
+  name: string;
+  price: number;
+}
+
+interface OrderItem {
+  id: string;
+  menuItemId: string;
+  quantity: number;
+  price: number;
+  menuItem?: MenuItem;
+  restaurant?: Restaurant;
+}
+
+interface Order {
+  id: string;
+  status: string;
+  totalPrice: number;
+  userId: string;
+  restaurantId: string | null;
+  restaurant?: Restaurant | null;
+  orderItems?: OrderItem[];
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+/** Derive unique restaurant names from orderItems (multi-restaurant support) */
+function getRestaurantDisplay(order: Order): string {
+  const items = order.orderItems ?? [];
+
+  const names = [
+    ...new Set(
+      items
+        .map((i) => i.restaurant?.name)
+        .filter((n): n is string => Boolean(n)),
+    ),
+  ];
+
+  if (names.length > 0) return names.join(', ');
+
+  // Fallback to order-level restaurant for legacy orders
+  return order.restaurant?.name ?? '—';
+}
+
+// ── Sub-components ───────────────────────────────────────────────────────
 
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
@@ -18,7 +79,7 @@ function CopyButton({ value }: { value: string }) {
     try {
       await navigator.clipboard.writeText(value);
       setCopied(true);
-      toast.success('Order ID copied to clipboard');
+      toast.success('Order ID copied');
       setTimeout(() => setCopied(false), 2000);
     } catch {
       toast.error('Failed to copy');
@@ -38,15 +99,67 @@ function CopyButton({ value }: { value: string }) {
   );
 }
 
+function OrderItemsExpander({ order }: { order: Order }) {
+  const [open, setOpen] = useState(false);
+  const items = order.orderItems ?? [];
+  if (items.length === 0) return null;
+
+  return (
+    <div className="mt-1">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+      >
+        {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+        {open ? 'Hide' : 'Show'} {items.length} item(s)
+      </button>
+
+      {open && (
+        <div className="mt-2 rounded-lg border border-border bg-muted/20 overflow-hidden">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-border bg-muted/40">
+                <th className="text-left px-3 py-2 font-semibold text-muted-foreground">Item</th>
+                <th className="text-left px-3 py-2 font-semibold text-muted-foreground">Restaurant</th>
+                <th className="text-center px-3 py-2 font-semibold text-muted-foreground">Qty</th>
+                <th className="text-right px-3 py-2 font-semibold text-muted-foreground">Price</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.id} className="border-b border-border last:border-0">
+                  <td className="px-3 py-2 font-medium">
+                    {item.menuItem?.name ?? 'Unknown'}
+                  </td>
+                  <td className="px-3 py-2 text-muted-foreground">
+                    {item.restaurant?.name ?? order.restaurant?.name ?? '—'}
+                  </td>
+                  <td className="px-3 py-2 text-center">{item.quantity}</td>
+                  <td className="px-3 py-2 text-right font-medium">
+                    ${(item.price * item.quantity).toFixed(2)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main Page ────────────────────────────────────────────────────────────
+
 export default function OrdersPage() {
   const { user } = useStore();
   const queryClient = useQueryClient();
 
-  const { data: orders, isLoading } = useQuery({
+  const { data: orders = [], isLoading } = useQuery<Order[]>({
     queryKey: ['orders'],
     queryFn: async () => {
       const res = await api.get('/orders');
-      return res.data;
+      if (!Array.isArray(res.data)) return [];
+      return res.data as Order[];
     },
   });
 
@@ -55,11 +168,13 @@ export default function OrdersPage() {
     onSuccess: () => {
       toast.success('Order cancelled successfully');
       queryClient.invalidateQueries({ queryKey: ['orders'] });
+      queryClient.invalidateQueries({ queryKey: ['regionOrders'] });
+      queryClient.invalidateQueries({ queryKey: ['regionCart'] });
     },
     onError: (err: unknown) =>
       toast.error(
         (err as { response?: { data?: { message?: string } } }).response?.data?.message ||
-        'Failed to cancel'
+          'Failed to cancel',
       ),
   });
 
@@ -68,15 +183,34 @@ export default function OrdersPage() {
     onSuccess: () => {
       toast.success('Order checked out successfully');
       queryClient.invalidateQueries({ queryKey: ['orders'] });
+      queryClient.invalidateQueries({ queryKey: ['regionOrders'] });
+      queryClient.invalidateQueries({ queryKey: ['regionCart'] });
     },
     onError: (err: unknown) =>
       toast.error(
         (err as { response?: { data?: { message?: string } } }).response?.data?.message ||
-        'Failed to checkout'
+          'Failed to checkout',
       ),
   });
 
-  if (isLoading) return <div className="animate-pulse">Loading your orders...</div>;
+  if (isLoading) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Orders</h1>
+        </div>
+        <Card>
+          <CardContent className="py-10">
+            <div className="space-y-3 animate-pulse">
+              {[...Array(4)].map((_, i) => (
+                <div key={i} className="h-10 bg-muted rounded" />
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -98,39 +232,63 @@ export default function OrdersPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Order ID</TableHead>
-                <TableHead>Restaurant</TableHead>
+                <TableHead>Restaurants</TableHead>
                 {user?.role !== 'MEMBER' && <TableHead>User</TableHead>}
+                <TableHead>Items</TableHead>
                 <TableHead>Total</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {!orders?.length ? (
+              {orders.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-6 text-muted-foreground">
+                  <TableCell
+                    colSpan={user?.role !== 'MEMBER' ? 7 : 6}
+                    className="text-center py-6 text-muted-foreground"
+                  >
                     No orders found
                   </TableCell>
                 </TableRow>
               ) : (
-                orders.map((order: Record<string, unknown>) => (
-                  <TableRow key={order.id as string}>
-                    {/* Show truncated ID + copy button for the full UUID */}
+                orders.map((order) => (
+                  <TableRow key={order.id}>
+                    {/* Order ID */}
                     <TableCell className="font-medium font-mono text-xs">
                       <span className="inline-flex items-center gap-1">
-                        {(order.id as string).slice(0, 8)}…
-                        <CopyButton value={order.id as string} />
+                        {order.id.slice(0, 8)}…
+                        <CopyButton value={order.id} />
                       </span>
                     </TableCell>
-                    <TableCell>
-                      {(order.restaurant as { name: string } | undefined)?.name ?? '—'}
+
+                    {/* Restaurants — derived from orderItems */}
+                    <TableCell className="max-w-[180px]">
+                      <span
+                        className="text-sm truncate block"
+                        title={getRestaurantDisplay(order)}
+                      >
+                        {getRestaurantDisplay(order)}
+                      </span>
                     </TableCell>
+
+                    {/* User ID (non-member only) */}
                     {user?.role !== 'MEMBER' && (
-                      <TableCell className="font-mono text-xs">
-                        {(order.userId as string).slice(0, 8)}…
+                      <TableCell className="font-mono text-xs text-muted-foreground">
+                        {order.userId.slice(0, 8)}…
                       </TableCell>
                     )}
-                    <TableCell>${(order.totalPrice as number).toFixed(2)}</TableCell>
+
+                    {/* Expandable items */}
+                    <TableCell>
+                      <OrderItemsExpander order={order} />
+                    </TableCell>
+
+                    {/* Total */}
+                    <TableCell className="font-medium">
+                      ${order.totalPrice.toFixed(2)}
+                    </TableCell>
+
+                    {/* Status badge */}
                     <TableCell>
                       <Badge
                         variant={
@@ -141,14 +299,16 @@ export default function OrdersPage() {
                             : 'default'
                         }
                       >
-                        {order.status as string}
+                        {order.status}
                       </Badge>
                     </TableCell>
+
+                    {/* Actions */}
                     <TableCell className="text-right space-x-2">
                       {user?.role !== 'MEMBER' && order.status === 'CART' && (
                         <Button
                           size="sm"
-                          onClick={() => checkoutMutation.mutate(order.id as string)}
+                          onClick={() => checkoutMutation.mutate(order.id)}
                           disabled={checkoutMutation.isPending}
                         >
                           Checkout
@@ -160,7 +320,7 @@ export default function OrdersPage() {
                           <Button
                             size="sm"
                             variant="destructive"
-                            onClick={() => cancelMutation.mutate(order.id as string)}
+                            onClick={() => cancelMutation.mutate(order.id)}
                             disabled={cancelMutation.isPending}
                           >
                             Cancel

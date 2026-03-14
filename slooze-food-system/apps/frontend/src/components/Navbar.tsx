@@ -10,7 +10,7 @@ import api from '@/lib/api';
 
 interface CartData {
   status: string;
-  orderItems: { quantity: number }[];
+  orderItems: { quantity: number }[] | null;
 }
 
 export default function Navbar() {
@@ -36,12 +36,14 @@ export default function Navbar() {
     router.push('/login');
   };
 
-  const cartItemsCount = allOrders.reduce(
-    (acc, order) => acc + (order.orderItems?.reduce((sum, item) => sum + item.quantity, 0) || 0),
-    0
-  );
+  // Guard against null/undefined orderItems after cart deletion
+  const cartItemsCount = Array.isArray(allOrders)
+  ? allOrders.reduce((acc, order) => {
+      if (!order || !Array.isArray(order.orderItems)) return acc;
+      return acc + order.orderItems.reduce((sum, item) => sum + (item?.quantity ?? 0), 0);
+    }, 0)
+  : 0;
 
-  // BUG FIX: show region name instead of UUID
   const regionLabel = user?.region?.name ?? user?.regionId ?? '';
 
   return (

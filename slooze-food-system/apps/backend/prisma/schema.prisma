@@ -45,14 +45,15 @@ model User {
 }
 
 model Restaurant {
-  id        String     @id @default(uuid())
-  name      String
-  regionId  String
-  region    Region     @relation(fields: [regionId], references: [id])
-  menuItems MenuItem[]
-  orders    Order[]
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  id         String      @id @default(uuid())
+  name       String
+  regionId   String
+  region     Region      @relation(fields: [regionId], references: [id])
+  menuItems  MenuItem[]
+  orders     Order[]
+  orderItems OrderItem[] // ← reverse relation added
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
 }
 
 model MenuItem {
@@ -73,8 +74,8 @@ model Order {
   status       OrderStatus @default(CART)
   userId       String
   user         User        @relation(fields: [userId], references: [id])
-  restaurantId String
-  restaurant   Restaurant  @relation(fields: [restaurantId], references: [id])
+  restaurantId String?                           // ← nullable
+  restaurant   Restaurant? @relation(fields: [restaurantId], references: [id])
   regionId     String?
   region       Region?     @relation(fields: [regionId], references: [id])
   orderItems   OrderItem[]
@@ -84,15 +85,17 @@ model Order {
 }
 
 model OrderItem {
-  id         String   @id @default(uuid())
-  quantity   Int
-  price      Float
-  menuItemId String
-  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
-  orderId    String
-  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id           String      @id @default(uuid())
+  quantity     Int
+  price        Float
+  menuItemId   String
+  menuItem     MenuItem    @relation(fields: [menuItemId], references: [id])
+  orderId      String
+  order        Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  restaurantId String?                           // ← item-level restaurant
+  restaurant   Restaurant? @relation(fields: [restaurantId], references: [id])
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
 }
 
 model Payment {
